@@ -69,10 +69,7 @@ impl Aggregator {
             let Some(parent_elapsed) = elapsed.get_mut(&(parent_id, worker)) else {
                 panic!("parent elapsed missing");
             };
-            match parent_elapsed.checked_sub(duration) {
-                Some(elapsed) => *parent_elapsed = elapsed,
-                None => panic!("parent elapsed less than child's"),
-            }
+            *parent_elapsed = parent_elapsed.saturating_sub(duration);
         }
 
         // Build call stack for each operator.
