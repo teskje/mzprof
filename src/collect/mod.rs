@@ -44,6 +44,10 @@ impl Collector {
         self.subscribe(subscribe::Elapsed).await
     }
 
+    pub async fn subscribe_size(&self) -> anyhow::Result<()> {
+        self.subscribe(subscribe::Size).await
+    }
+
     async fn subscribe<S>(&self, subs: S) -> anyhow::Result<()>
     where
         S: Subscribe,
@@ -80,5 +84,6 @@ impl Stream for Collector {
 #[derive(Debug)]
 pub enum Event {
     Elapsed(Batch<(OpInfo, WorkerId)>),
+    Size(Batch<(OpInfo, Option<WorkerId>)>),
     Error(anyhow::Error),
 }

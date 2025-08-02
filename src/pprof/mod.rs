@@ -1,4 +1,13 @@
 use std::collections::BTreeMap;
+use std::fs::File;
+use std::io::BufWriter;
+use std::path::Path;
+
+use flate2::Compression;
+use flate2::write::GzEncoder;
+use protobuf::Message;
+
+use self::profile as pp;
 
 include!(concat!(env!("OUT_DIR"), "/protos/mod.rs"));
 
@@ -28,4 +37,16 @@ impl StringTable {
         vec.sort_by_key(|(_, idx)| *idx);
         vec.into_iter().map(|(s, _)| s).collect()
     }
+}
+
+/// Write a pprof profile to a file path.
+pub fn write_file(prof: &pp::Profile, path: &Path) -> anyhow::Result<()> {
+    let file = File::create(path)?;
+    let writer = BufWriter::new(file);
+
+    let mut gz = GzEncoder::new(writer, Compression::default());
+    prof.write_to_writer(&mut gz)?;
+    gz.finish()?;
+
+    Ok(())
 }

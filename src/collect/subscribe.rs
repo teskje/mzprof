@@ -65,14 +65,10 @@ impl Subscribe for Elapsed {
 
     fn query(&self) -> String {
         "
-        SELECT
-            id::int8,
-            worker_id::int8,
-            name,
-            address::text
-        FROM mz_introspection.mz_scheduling_elapsed_raw
-        JOIN mz_introspection.mz_dataflow_operators USING (id)
+        SELECT id::int8, worker_id::int8, name, address::text
+        FROM mz_introspection.mz_dataflow_operators
         JOIN mz_introspection.mz_dataflow_addresses USING (id)
+        JOIN mz_introspection.mz_scheduling_elapsed_raw USING (id)
         "
         .into()
     }
@@ -86,6 +82,49 @@ impl Subscribe for Elapsed {
         let id = id.try_into()?;
         let op = OpInfo { id, name, address };
         let worker_id = worker_id.try_into()?;
+
+        Ok((op, worker_id))
+    }
+}
+
+pub(super) struct Size;
+
+impl Subscribe for Size {
+    type Data = (OpInfo, Option<WorkerId>);
+
+    const EVENT_FN: fn(Batch<Self::Data>) -> Event = Event::Size;
+
+    fn query(&self) -> String {
+        "
+        WITH
+            arrangement_sizes AS (
+                SELECT id::int8, worker_id::int8, name, address::text
+                FROM mz_introspection.mz_dataflow_operators
+                JOIN mz_introspection.mz_dataflow_addresses USING (id)
+                LEFT JOIN mz_introspection.mz_arrangement_heap_size_raw ON (id = operator_id)
+            ),
+            batcher_sizes AS (
+                SELECT id::int8, worker_id::int8, name, address::text
+                FROM mz_introspection.mz_dataflow_operators
+                JOIN mz_introspection.mz_dataflow_addresses USING (id)
+                LEFT JOIN mz_introspection.mz_arrangement_batcher_size_raw ON (id = operator_id)
+            )
+        SELECT * FROM arrangement_sizes
+        UNION ALL
+        SELECT * FROM batcher_sizes
+        "
+        .into()
+    }
+
+    fn parse(row: &PgRow) -> anyhow::Result<Self::Data> {
+        let id: i64 = row.get("id");
+        let worker_id: Option<i64> = row.get("worker_id");
+        let name = row.get("name");
+        let address = parse_address(row)?;
+
+        let id = id.try_into()?;
+        let op = OpInfo { id, name, address };
+        let worker_id = worker_id.map(TryInto::try_into).transpose()?;
 
         Ok((op, worker_id))
     }
