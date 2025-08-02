@@ -2,6 +2,11 @@
 name = "mzprof"
 version = "0.1.0"
 edition = "2024"
+description = "A dataflow profiler for Materialize"
+readme = "README.md"
+repository = "https://github.com/teskje/mzprof"
+license = "MIT"
+categories = ["command-line-utilities", "database", "development-tools::profiling"]
 
 [dependencies]
 anyhow = "1.0.98"
