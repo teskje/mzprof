@@ -1,5 +1,8 @@
 # mzprof
 
+![crates.io](https://img.shields.io/crates/v/mzprof)
+![build](https://img.shields.io/github/actions/workflow/status/teskje/mzprof/ci.yml)
+
 A dataflow profiler for [Materialize](https://github.com/MaterializeInc/materialize).
 
 `mzprof` is a CLI tool that connects to any Materialize environment and subscribes to [introspection relations](https://materialize.com/docs/sql/system-catalog/mz_introspection) to collect operator-level metrics about running dataflows.
@@ -8,12 +11,22 @@ It produces profiles in [pprof](https://github.com/google/pprof) format, which c
 `mzprof` supports collecting one-off elapsed time and memory size profiles.
 Support for continuous profiling is planned.
 
+## Installation
+
+To install the latest published version of `mzprof` run:
+
+```
+cargo install --locked mzprof
+```
+
+Alternatively, clone this repository and use `cargo run` and/or `cargo build` as usual.
+
 ## Usage
 
 To collect a profile you need to supply `mzprof` with the `postgres://` URL of the target Materialize environment, as well as a cluster and replica name:
 
 ```
-cargo run -- postgres://jan@localhost:6875/materialize --cluster compute --replica r1 time
+mzprof postgres://jan@localhost:6875/materialize --cluster compute --replica r1 time
 ```
 
 This will collect a time profile over all dataflows on the target replica, with their elapsed times since they were installed.
@@ -21,13 +34,13 @@ This will collect a time profile over all dataflows on the target replica, with 
 You can instead collect a profile of live elapsed times by specifying a listen duration in seconds:
 
 ```
-cargo run -- [...] time --duration 10
+mzprof [...] time --duration 10
 ```
 
 To collect a size profile, use the `size` command instead:
 
 ```
-cargo run -- [...] size
+mzprof [...] size
 ```
 
 ## Viewing Profiles
