@@ -9,7 +9,11 @@ use protobuf::Message;
 
 use self::profile as pp;
 
-include!(concat!(env!("OUT_DIR"), "/protos/mod.rs"));
+mod generated {
+    #![allow(clippy::pedantic)]
+    include!(concat!(env!("OUT_DIR"), "/protos/mod.rs"));
+}
+pub use generated::*;
 
 /// Helper struct to simplify building a `string_table`.
 #[derive(Default)]
