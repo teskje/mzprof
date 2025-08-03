@@ -3,22 +3,23 @@ mod collect;
 mod pprof;
 mod types;
 
-use std::path::PathBuf;
 use std::time::Duration;
 
-use anyhow::bail;
 use clap::Parser;
-use futures::StreamExt;
+use futures::TryStreamExt;
 
-use crate::aggregate::{ElapsedAggregator, SizeAggregator};
-use crate::collect::{Collector, Event};
-use crate::pprof::profile as pp;
+use crate::aggregate::Aggregator;
+use crate::collect::Collector;
 
 /// Dataflow profiler for Materialize
 #[derive(Debug, Parser)]
 #[command(version, about)]
 struct Args {
+    #[command(flatten)]
+    profile: Profile,
+
     /// URL of the Materialize SQL endpoint
+    #[arg(long)]
     sql_url: String,
 
     /// Target cluster name
@@ -29,98 +30,61 @@ struct Args {
     #[arg(long)]
     replica: String,
 
-    /// Output file path
+    /// Profiling duration in seconds
     #[arg(long)]
-    output_file: Option<PathBuf>,
+    duration: Option<u64>,
 
-    #[command(subcommand)]
-    profile: Profile,
+    /// Output file path
+    #[arg(long, default_value_t = String::from("profile.pprof"))]
+    output_file: String,
 }
 
 #[derive(Debug, Parser)]
-enum Profile {
+#[group(required = true)]
+struct Profile {
     /// Collect an elapsed time profile
-    Time {
-        /// Profiling duration in seconds
-        #[arg(long)]
-        duration: Option<u64>,
-    },
-    /// Collect a size profile
-    Size,
+    #[arg(long)]
+    time: bool,
+
+    /// Collect a heap size profile
+    #[arg(long)]
+    size: bool,
 }
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let args = Args::parse();
 
-    let collector = Collector::new(&args.sql_url, &args.cluster, &args.replica)?;
+    let mut collector = Collector::new(&args.sql_url, &args.cluster, &args.replica)?;
+    collector.subscribe_operator().await?;
 
-    let prof = match args.profile {
-        Profile::Time { duration } => {
-            let duration = duration.map(Duration::from_secs);
-            profile_time(collector, duration).await?
-        }
-        Profile::Size => profile_size(collector).await?,
-    };
+    if args.profile.time {
+        collector.subscribe_elapsed().await?;
+    }
+    if args.profile.size {
+        collector.subscribe_size().await?;
+    }
 
-    let output_path = args.output_file.unwrap_or_else(|| match args.profile {
-        Profile::Time { .. } => "time.pprof".into(),
-        Profile::Size => "size.pprof".into(),
-    });
-    println!("Writing profile to file `{}`", output_path.display());
-    pprof::write_file(&prof, &output_path)?;
-
-    Ok(())
-}
-
-async fn profile_time(
-    collector: Collector,
-    duration: Option<Duration>,
-) -> anyhow::Result<pp::Profile> {
-    collector.subscribe_elapsed().await?;
-
-    let mut event_stream = if let Some(duration) = duration {
-        println!("Collecting time profile over {duration:?}");
+    let mut stream = if let Some(secs) = args.duration {
+        let duration = Duration::from_secs(secs);
+        println!("Collecting profile over {duration:?}");
         collector.listen(duration)
     } else {
-        println!("Collecting time profile snapshot");
+        println!("Collecting profile snapshot");
         collector.snapshot()
     };
 
-    let mut aggregator = ElapsedAggregator::new();
+    let mut aggregator = Aggregator::new();
 
-    while let Some(event) = event_stream.next().await {
-        match event {
-            Event::Elapsed(batch) => {
-                println!("* processing updates up to time {:?}", batch.time);
-                aggregator.update(batch);
-            }
-            Event::Error(error) => bail!("collector error: {error}"),
-            Event::Size(_) => unreachable!(),
-        }
+    while let Some(batch) = stream.try_next().await? {
+        println!("* processing updates up to time {:?}", batch.time);
+        aggregator.update(batch);
     }
 
-    Ok(aggregator.build_pprof())
-}
+    let prof = aggregator.build_pprof();
 
-async fn profile_size(collector: Collector) -> anyhow::Result<pp::Profile> {
-    collector.subscribe_size().await?;
+    println!("Writing profile to file `{}`", args.output_file);
+    pprof::write_file(&prof, &args.output_file)?;
 
-    println!("Collecting size profile snapshot");
-    let mut event_stream = collector.snapshot();
-
-    let mut aggregator = SizeAggregator::new();
-
-    while let Some(event) = event_stream.next().await {
-        match event {
-            Event::Size(batch) => {
-                println!("* processing updates up to time {:?}", batch.time);
-                aggregator.update(batch);
-            }
-            Event::Error(error) => bail!("collector error: {error}"),
-            Event::Elapsed(_) => unreachable!(),
-        }
-    }
-
-    Ok(aggregator.build_pprof())
+    Ok(())
 }

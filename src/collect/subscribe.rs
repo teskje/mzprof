@@ -1,150 +1,153 @@
+use std::mem;
 use std::time::Duration;
 
-use futures::TryStreamExt;
+use futures::StreamExt;
 use sqlx::Row;
 use sqlx::postgres::{PgConnection, PgRow};
 use sqlx::types::Decimal;
 use tokio::sync::mpsc;
 
-use crate::types::{Address, Batch, OpInfo, Update, WorkerId};
+use crate::types::{Address, OpInfo};
 
-use super::Event;
+use super::{Batch, Data, Update};
 
-pub(super) trait Subscribe: Send + 'static {
-    type Data: Send;
+pub(super) struct Subscribe {
+    rx: mpsc::UnboundedReceiver<sqlx::Result<PgRow>>,
+    spec: Box<dyn Spec>,
+    stash: Vec<Update>,
+}
 
-    const EVENT_FN: fn(Batch<Self::Data>) -> Event;
+impl Subscribe {
+    pub fn start(mut conn: PgConnection, spec: impl Spec) -> Self {
+        let (tx, rx) = mpsc::unbounded_channel();
+        let query = spec.query();
 
+        tokio::spawn(async move {
+            let query = format!("SUBSCRIBE ({query}) WITH (PROGRESS)");
+            let mut stream = sqlx::query(&query).fetch(&mut conn);
+            while let Some(row) = stream.next().await {
+                if tx.send(row).is_err() {
+                    break;
+                }
+            }
+        });
+
+        Self {
+            rx,
+            spec: Box::new(spec),
+            stash: Vec::new(),
+        }
+    }
+
+    /// # Cancel safety
+    ///
+    /// This method is cancel safe.
+    pub async fn recv(&mut self) -> anyhow::Result<Batch> {
+        loop {
+            // `mpsc::UnboundedReceiver::recv` is cancel safe.
+            let row = self.rx.recv().await.unwrap()?;
+
+            if row.get("mz_progressed") {
+                let time = get_mz_timestamp(&row)?;
+                return Ok(Batch {
+                    time,
+                    updates: mem::take(&mut self.stash),
+                });
+            }
+
+            let update = self.spec.parse_update(&row)?;
+            self.stash.push(update);
+        }
+    }
+}
+
+fn get_mz_timestamp(row: &PgRow) -> anyhow::Result<Duration> {
+    let ts: Decimal = row.get("mz_timestamp");
+    let ms: u64 = ts.try_into()?;
+    Ok(Duration::from_millis(ms))
+}
+
+pub(super) trait Spec: Send + 'static {
     fn query(&self) -> String;
-    fn parse(row: &PgRow) -> anyhow::Result<Self::Data>;
+    fn parse(&self, row: &PgRow) -> anyhow::Result<Data>;
 
-    fn parse_update(row: &PgRow) -> anyhow::Result<Update<Self::Data>> {
-        let data = Self::parse(row)?;
-        let time = parse_timestamp(row)?;
+    fn parse_update(&self, row: &PgRow) -> anyhow::Result<Update> {
+        let data = self.parse(row)?;
+        let time = get_mz_timestamp(row)?;
         let diff = row.get("mz_diff");
 
         Ok(Update { data, time, diff })
     }
 }
 
-pub(super) async fn run<S: Subscribe>(
-    subs: S,
-    mut conn: PgConnection,
-    tx: mpsc::UnboundedSender<Event>,
-) -> anyhow::Result<()> {
-    let query = format!("SUBSCRIBE ({}) WITH (PROGRESS)", subs.query());
-    let mut stream = sqlx::query(&query).fetch(&mut conn);
+pub(super) struct Operator;
 
-    let mut updates = Vec::new();
-    while let Some(row) = stream.try_next().await? {
-        if row.get("mz_progressed") {
-            let time = parse_timestamp(&row)?;
-            let batch = Batch {
-                time,
-                updates: std::mem::take(&mut updates),
-            };
-            let event = S::EVENT_FN(batch);
-            if tx.send(event).is_err() {
-                break;
-            }
-        } else {
-            let update = S::parse_update(&row)?;
-            updates.push(update);
-        }
-    }
-
-    Ok(())
-}
-
-pub(super) struct Elapsed;
-
-impl Subscribe for Elapsed {
-    type Data = (OpInfo, WorkerId);
-
-    const EVENT_FN: fn(Batch<Self::Data>) -> Event = Event::Elapsed;
-
+impl Spec for Operator {
     fn query(&self) -> String {
         "
-        SELECT id::int8, worker_id::int8, name, address::text
+        SELECT id::int8, name, address::text
         FROM mz_introspection.mz_dataflow_operators
         JOIN mz_introspection.mz_dataflow_addresses USING (id)
-        JOIN mz_introspection.mz_scheduling_elapsed_raw USING (id)
         "
         .into()
     }
 
-    fn parse(row: &PgRow) -> anyhow::Result<Self::Data> {
-        let id: i64 = row.get("id");
-        let worker_id: i64 = row.get("worker_id");
+    fn parse(&self, row: &PgRow) -> anyhow::Result<Data> {
+        let id = row.get::<i64, _>("id").try_into()?;
         let name = row.get("name");
-        let address = parse_address(row)?;
+        let address: &str = row.get("address");
 
-        let id = id.try_into()?;
-        let op = OpInfo { id, name, address };
-        let worker_id = worker_id.try_into()?;
+        let indexes = address
+            .trim_start_matches('{')
+            .trim_end_matches('}')
+            .split(',')
+            .map(str::parse)
+            .collect::<Result<Vec<_>, _>>()?
+            .into_boxed_slice();
 
-        Ok((op, worker_id))
+        let info = OpInfo {
+            name,
+            address: Address(indexes),
+        };
+        Ok(Data::Operator(id, info))
+    }
+}
+
+pub(super) struct Elapsed;
+
+impl Spec for Elapsed {
+    fn query(&self) -> String {
+        "
+        SELECT id::int8, worker_id::int8
+        FROM mz_introspection.mz_scheduling_elapsed_raw
+        "
+        .into()
+    }
+
+    fn parse(&self, row: &PgRow) -> anyhow::Result<Data> {
+        let id = row.get::<i64, _>("id").try_into()?;
+        let worker_id = row.get::<i64, _>("worker_id").try_into()?;
+        Ok(Data::Elapsed(id, worker_id))
     }
 }
 
 pub(super) struct Size;
 
-impl Subscribe for Size {
-    type Data = (OpInfo, Option<WorkerId>);
-
-    const EVENT_FN: fn(Batch<Self::Data>) -> Event = Event::Size;
-
+impl Spec for Size {
     fn query(&self) -> String {
         "
-        WITH
-            arrangement_sizes AS (
-                SELECT id::int8, worker_id::int8, name, address::text
-                FROM mz_introspection.mz_dataflow_operators
-                JOIN mz_introspection.mz_dataflow_addresses USING (id)
-                LEFT JOIN mz_introspection.mz_arrangement_heap_size_raw ON (id = operator_id)
-            ),
-            batcher_sizes AS (
-                SELECT id::int8, worker_id::int8, name, address::text
-                FROM mz_introspection.mz_dataflow_operators
-                JOIN mz_introspection.mz_dataflow_addresses USING (id)
-                LEFT JOIN mz_introspection.mz_arrangement_batcher_size_raw ON (id = operator_id)
-            )
-        SELECT * FROM arrangement_sizes
+        SELECT operator_id::int8, worker_id::int8
+        FROM mz_introspection.mz_arrangement_heap_size_raw
         UNION ALL
-        SELECT * FROM batcher_sizes
+        SELECT operator_id::int8, worker_id::int8
+        FROM mz_introspection.mz_arrangement_batcher_size_raw
         "
         .into()
     }
 
-    fn parse(row: &PgRow) -> anyhow::Result<Self::Data> {
-        let id: i64 = row.get("id");
-        let worker_id: Option<i64> = row.get("worker_id");
-        let name = row.get("name");
-        let address = parse_address(row)?;
-
-        let id = id.try_into()?;
-        let op = OpInfo { id, name, address };
-        let worker_id = worker_id.map(TryInto::try_into).transpose()?;
-
-        Ok((op, worker_id))
+    fn parse(&self, row: &PgRow) -> anyhow::Result<Data> {
+        let id = row.get::<i64, _>("operator_id").try_into()?;
+        let worker_id = row.get::<i64, _>("worker_id").try_into()?;
+        Ok(Data::Size(id, worker_id))
     }
-}
-
-fn parse_timestamp(row: &PgRow) -> anyhow::Result<Duration> {
-    let ts: Decimal = row.get("mz_timestamp");
-    let ms: u64 = ts.try_into()?;
-    Ok(Duration::from_millis(ms))
-}
-
-fn parse_address(row: &PgRow) -> anyhow::Result<Address> {
-    let address: String = row.get("address");
-    let indexes = address
-        .trim_start_matches('{')
-        .trim_end_matches('}')
-        .split(',')
-        .map(str::parse)
-        .collect::<Result<Vec<_>, _>>()?
-        .into_boxed_slice();
-
-    Ok(Address(indexes))
 }

@@ -4,26 +4,24 @@ use std::time::Duration;
 
 use futures::{Stream, StreamExt};
 
-use crate::types::Batch;
+use super::{Batch, Data};
 
-use super::{Collector, Event};
-
-pub(super) struct Snapshot {
-    collector: Collector,
+pub(super) struct Snapshot<S> {
+    inner: S,
     as_of: Option<Duration>,
     finished: bool,
 }
 
-impl Snapshot {
-    pub fn new(collector: Collector) -> Self {
+impl<S> Snapshot<S> {
+    pub fn new(inner: S) -> Self {
         Self {
-            collector,
+            inner,
             as_of: None,
             finished: false,
         }
     }
 
-    fn filter_batch<D>(&mut self, batch: &mut Batch<D>) {
+    fn filter_batch(&mut self, batch: &mut Batch) {
         let as_of = *self.as_of.get_or_insert(batch.time);
         batch.updates.retain(|update| update.time <= as_of);
 
@@ -33,49 +31,50 @@ impl Snapshot {
     }
 }
 
-impl Stream for Snapshot {
-    type Item = Event;
+impl<S: Stream<Item = anyhow::Result<Batch>> + Unpin> Stream for Snapshot<S> {
+    type Item = S::Item;
 
-    fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Event>> {
+    fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         if self.finished {
             return Poll::Ready(None);
         }
 
-        let mut event = ready!(self.collector.poll_next_unpin(cx));
+        let mut result = ready!(self.inner.poll_next_unpin(cx));
 
-        match &mut event {
-            Some(Event::Elapsed(batch)) => self.filter_batch(batch),
-            Some(Event::Size(batch)) => self.filter_batch(batch),
-            Some(Event::Error(_)) | None => return Poll::Ready(event),
+        if let Some(Ok(batch)) = &mut result {
+            self.filter_batch(batch);
         }
 
-        Poll::Ready(event)
+        Poll::Ready(result)
     }
 }
 
-pub(super) struct Listen {
-    collector: Collector,
+pub(super) struct Listen<S> {
+    inner: S,
     as_of: Option<Duration>,
     duration: Duration,
     finished: bool,
 }
 
-impl Listen {
-    pub fn new(collector: Collector, duration: Duration) -> Self {
+impl<S> Listen<S> {
+    pub fn new(inner: S, duration: Duration) -> Self {
         Self {
-            collector,
+            inner,
             as_of: None,
             duration,
             finished: false,
         }
     }
 
-    fn filter_batch<D>(&mut self, batch: &mut Batch<D>) {
+    fn filter_batch(&mut self, batch: &mut Batch) {
         let as_of = *self.as_of.get_or_insert(batch.time);
         let up_to = as_of + self.duration;
-        batch
-            .updates
-            .retain(|update| update.time > as_of && update.time <= up_to);
+
+        // Skip the snapshot for incremental profile types only.
+        batch.updates.retain(|update| match &update.data {
+            Data::Operator(..) | Data::Size(..) => update.time <= up_to,
+            Data::Elapsed(..) => update.time > as_of && update.time <= up_to,
+        });
 
         if batch.time > up_to {
             self.finished = true;
@@ -83,22 +82,20 @@ impl Listen {
     }
 }
 
-impl Stream for Listen {
-    type Item = Event;
+impl<S: Stream<Item = anyhow::Result<Batch>> + Unpin> Stream for Listen<S> {
+    type Item = S::Item;
 
-    fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Event>> {
+    fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         if self.finished {
             return Poll::Ready(None);
         }
 
-        let mut event = ready!(self.collector.poll_next_unpin(cx));
+        let mut result = ready!(self.inner.poll_next_unpin(cx));
 
-        match &mut event {
-            Some(Event::Elapsed(batch)) => self.filter_batch(batch),
-            Some(Event::Size(batch)) => self.filter_batch(batch),
-            Some(Event::Error(_)) | None => return Poll::Ready(event),
+        if let Some(Ok(batch)) = &mut result {
+            self.filter_batch(batch);
         }
 
-        Poll::Ready(event)
+        Poll::Ready(result)
     }
 }
