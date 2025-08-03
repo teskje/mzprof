@@ -44,7 +44,7 @@ impl StringTable {
 }
 
 /// Write a pprof profile to a file path.
-pub fn write_file(prof: &pp::Profile, path: &Path) -> anyhow::Result<()> {
+pub fn write_file(prof: &pp::Profile, path: impl AsRef<Path>) -> anyhow::Result<()> {
     let file = File::create(path)?;
     let writer = BufWriter::new(file);
 

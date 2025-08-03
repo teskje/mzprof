@@ -1,22 +1,24 @@
-mod subscribe;
-mod wrapper;
+pub mod subscribe;
 
-use std::pin::Pin;
-use std::task::{Context, Poll};
+use std::any::TypeId;
+use std::collections::BTreeMap;
 use std::time::Duration;
 
-use futures::{Stream, StreamExt};
+use async_stream::try_stream;
+use futures::StreamExt;
+use futures::stream::BoxStream;
 use sqlx::Connection;
 use sqlx::postgres::{PgConnectOptions, PgConnection};
-use tokio::sync::mpsc;
+use tokio_stream::{StreamMap, StreamNotifyClose};
 
 use crate::collect::subscribe::Subscribe;
-use crate::types::{Batch, OpInfo, WorkerId};
+use crate::types::{OpId, OpInfo, WorkerId};
 
 pub struct Collector {
     connect_options: PgConnectOptions,
-    event_tx: mpsc::UnboundedSender<Event>,
-    event_rx: mpsc::UnboundedReceiver<Event>,
+    stream: StreamMap<TypeId, StreamNotifyClose<Subscribe>>,
+    progress: BTreeMap<TypeId, Duration>,
+    stash: BTreeMap<Duration, Vec<Update>>,
 }
 
 impl Collector {
@@ -26,12 +28,11 @@ impl Collector {
             .application_name("mzprof")
             .options([("cluster", cluster), ("cluster_replica", replica)]);
 
-        let (event_tx, event_rx) = mpsc::unbounded_channel();
-
         Ok(Self {
             connect_options,
-            event_tx,
-            event_rx,
+            stream: StreamMap::new(),
+            progress: BTreeMap::new(),
+            stash: BTreeMap::new(),
         })
     }
 
@@ -40,50 +41,79 @@ impl Collector {
         Ok(conn)
     }
 
-    pub async fn subscribe_elapsed(&self) -> anyhow::Result<()> {
-        self.subscribe(subscribe::Elapsed).await
-    }
-
-    pub async fn subscribe_size(&self) -> anyhow::Result<()> {
-        self.subscribe(subscribe::Size).await
-    }
-
-    async fn subscribe<S>(&self, subs: S) -> anyhow::Result<()>
-    where
-        S: Subscribe,
-    {
+    pub async fn subscribe(
+        &mut self,
+        spec: impl subscribe::Spec,
+        mode: subscribe::Mode,
+    ) -> anyhow::Result<()> {
+        let id = spec.type_id();
         let conn = self.connect().await?;
-        let tx = self.event_tx.clone();
+        let sub = Subscribe::start(conn, spec, mode);
+        let stream = StreamNotifyClose::new(sub);
 
-        tokio::spawn(async move {
-            if let Err(error) = subscribe::run(subs, conn, tx.clone()).await {
-                let _ = tx.send(Event::Error(error));
-            }
-        });
-
+        self.stream.insert(id, stream);
+        self.progress.insert(id, Duration::ZERO);
         Ok(())
     }
 
-    pub fn snapshot(self) -> Pin<Box<dyn Stream<Item = Event>>> {
-        wrapper::Snapshot::new(self).boxed()
+    fn frontier(&self) -> Option<Duration> {
+        self.progress.values().copied().min()
     }
 
-    pub fn listen(self, duration: Duration) -> Pin<Box<dyn Stream<Item = Event>>> {
-        wrapper::Listen::new(self, duration).boxed()
+    fn absorb_batch(&mut self, id: TypeId, batch: Batch) -> Vec<Batch> {
+        self.progress.insert(id, batch.time);
+
+        for update in batch.updates {
+            self.stash.entry(update.time).or_default().push(update);
+        }
+
+        let frontier = self.frontier().unwrap();
+        let mut batches = Vec::new();
+        while let Some((time, _)) = self.stash.first_key_value()
+            && *time < frontier
+        {
+            let (time, updates) = self.stash.pop_first().unwrap();
+            batches.push(Batch { time, updates });
+        }
+
+        batches
+    }
+
+    pub fn into_stream(mut self) -> BoxStream<'static, anyhow::Result<Batch>> {
+        try_stream! {
+            while let Some((id, result)) = self.stream.next().await {
+                let Some(result) = result else {
+                    self.progress.remove(&id);
+                    continue;
+                };
+
+                let batch = result?;
+                let ready = self.absorb_batch(id, batch);
+                for batch in ready {
+                    yield batch;
+                }
+            }
+        }
+        .boxed()
     }
 }
 
-impl Stream for Collector {
-    type Item = Event;
-
-    fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Event>> {
-        self.event_rx.poll_recv(cx)
-    }
+#[derive(Clone, Debug)]
+pub enum Data {
+    Operator(OpId, OpInfo),
+    Elapsed(OpId, WorkerId),
+    Size(OpId, WorkerId),
 }
 
-#[derive(Debug)]
-pub enum Event {
-    Elapsed(Batch<(OpInfo, WorkerId)>),
-    Size(Batch<(OpInfo, Option<WorkerId>)>),
-    Error(anyhow::Error),
+#[derive(Clone, Debug)]
+pub struct Update {
+    pub data: Data,
+    pub time: Duration,
+    pub diff: i64,
+}
+
+#[derive(Clone, Debug)]
+pub struct Batch {
+    pub time: Duration,
+    pub updates: Vec<Update>,
 }

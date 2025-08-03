@@ -26,7 +26,7 @@ Alternatively, clone this repository and use `cargo run` and/or `cargo build` as
 To collect a profile you need to supply `mzprof` with the `postgres://` URL of the target Materialize environment, as well as a cluster and replica name:
 
 ```
-mzprof postgres://jan@localhost:6875/materialize --cluster compute --replica r1 time
+mzprof --sql-url postgres://jan@localhost:6875/materialize --cluster compute --replica r1 --profile time
 ```
 
 This will collect a time profile over all dataflows on the target replica, with their elapsed times since they were installed.
@@ -34,13 +34,13 @@ This will collect a time profile over all dataflows on the target replica, with 
 You can instead collect a profile of live elapsed times by specifying a listen duration in seconds:
 
 ```
-mzprof [...] time --duration 10
+mzprof [...] --profile time --duration 10
 ```
 
-To collect a size profile, use the `size` command instead:
+To collect a heap size profile, specify the `size` profile type instead:
 
 ```
-mzprof [...] size
+mzprof [...] --profile size
 ```
 
 ## Viewing Profiles
