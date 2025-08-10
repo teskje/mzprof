@@ -1,7 +1,7 @@
 # mzprof
 
-![crates.io](https://img.shields.io/crates/v/mzprof)
-![build](https://img.shields.io/github/actions/workflow/status/teskje/mzprof/ci.yml)
+[![crates.io](https://img.shields.io/crates/v/mzprof)](https://crates.io/crates/mzprof)
+[![build](https://img.shields.io/github/actions/workflow/status/teskje/mzprof/ci.yml)](https://github.com/teskje/mzprof/actions/workflows/ci.yml)
 
 A dataflow profiler for [Materialize](https://github.com/MaterializeInc/materialize).
 
