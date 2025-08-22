@@ -102,10 +102,7 @@ impl Aggregator {
             let mut elapsed_ns: BTreeMap<_, _> = self
                 .elapsed
                 .iter()
-                .map(|(key, duration)| {
-                    let nanos: i64 = duration.as_nanos().try_into().unwrap();
-                    (*key, nanos)
-                })
+                .map(|(key, duration)| (*key, duration_to_nanos(*duration)))
                 .collect();
 
             // Elapsed times are cumulative, i.e. each node includes the elapsed times of its
@@ -119,7 +116,7 @@ impl Aggregator {
                     .and_then(|parent_id| elapsed_ns.get_mut(&(*parent_id, worker)));
 
                 if let Some(parent_ns) = parent_ns {
-                    let nanos = duration.as_nanos().try_into().unwrap();
+                    let nanos = duration_to_nanos(duration);
                     *parent_ns = parent_ns.saturating_sub(nanos);
                 }
             }
@@ -139,6 +136,16 @@ impl Aggregator {
 
         builder.build()
     }
+}
+
+/// Convert the given duration into an `i64` nanoseconds value.
+///
+/// # Panics
+///
+/// Panics if the amount of nanoseconds doesn't fit in an `i64`, i.e. if the duration is longer
+/// than 292 years.
+fn duration_to_nanos(duration: Duration) -> i64 {
+    duration.as_nanos().try_into().unwrap()
 }
 
 struct ProfileBuilder<'a> {
@@ -254,7 +261,7 @@ impl<'a> ProfileBuilder<'a> {
         let mut prof = pp::Profile::new();
 
         if let Some(time) = self.time {
-            prof.time_nanos = time.as_nanos().try_into().unwrap();
+            prof.time_nanos = duration_to_nanos(time);
         }
 
         prof.function = self.functions.into_values().collect();

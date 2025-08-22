@@ -4,6 +4,7 @@ use std::pin::Pin;
 use std::task::{Context, Poll, ready};
 use std::time::Duration;
 
+use anyhow::bail;
 use async_stream::try_stream;
 use futures::stream::BoxStream;
 use futures::{Stream, StreamExt, TryStreamExt};
@@ -55,7 +56,10 @@ impl Subscribe {
 
         // The first row communicates the as-of time.
         let Some(up_to) = self.up_to else {
-            assert!(progress);
+            if !progress {
+                bail!("expected initial progress update, got: {row:?}");
+            }
+
             let up_to = match self.mode {
                 Mode::Snapshot => time,
                 Mode::Continual { duration: Some(d) } => time + d,
@@ -94,10 +98,11 @@ impl Stream for Subscribe {
                 return Poll::Ready(None);
             };
 
-            let result = ready!(stream.poll_next_unpin(cx)).unwrap();
+            let result = ready!(stream.poll_next_unpin(cx));
             let result = match result {
-                Ok(row) => self.absorb_row(&row),
-                Err(error) => Err(error.into()),
+                Some(Ok(row)) => self.absorb_row(&row),
+                Some(Err(error)) => Err(error.into()),
+                None => return Poll::Ready(None),
             };
 
             match result {
