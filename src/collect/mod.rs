@@ -103,6 +103,8 @@ pub enum Data {
     Operator(OpId, OpInfo),
     Elapsed(OpId, WorkerId),
     Size(OpId, WorkerId),
+    Capacity(OpId, WorkerId),
+    Records(OpId, WorkerId),
 }
 
 #[derive(Clone, Debug)]

@@ -215,3 +215,45 @@ impl Spec for Size {
         Ok(Data::Size(id, worker_id))
     }
 }
+
+pub struct Capacity;
+
+impl Spec for Capacity {
+    fn query(&self) -> String {
+        "
+        SELECT operator_id::int8, worker_id::int8
+        FROM mz_introspection.mz_arrangement_heap_capacity_raw
+        UNION ALL
+        SELECT operator_id::int8, worker_id::int8
+        FROM mz_introspection.mz_arrangement_batcher_capacity_raw
+        "
+        .into()
+    }
+
+    fn parse(&self, row: &PgRow) -> anyhow::Result<Data> {
+        let id = row.get::<i64, _>("operator_id").try_into()?;
+        let worker_id = row.get::<i64, _>("worker_id").try_into()?;
+        Ok(Data::Capacity(id, worker_id))
+    }
+}
+
+pub struct Records;
+
+impl Spec for Records {
+    fn query(&self) -> String {
+        "
+        SELECT operator_id::int8, worker_id::int8
+        FROM mz_introspection.mz_arrangement_records_raw
+        UNION ALL
+        SELECT operator_id::int8, worker_id::int8
+        FROM mz_introspection.mz_arrangement_batcher_records_raw
+        "
+        .into()
+    }
+
+    fn parse(&self, row: &PgRow) -> anyhow::Result<Data> {
+        let id = row.get::<i64, _>("operator_id").try_into()?;
+        let worker_id = row.get::<i64, _>("worker_id").try_into()?;
+        Ok(Data::Records(id, worker_id))
+    }
+}

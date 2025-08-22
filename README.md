@@ -8,9 +8,6 @@ A dataflow profiler for [Materialize](https://github.com/MaterializeInc/material
 `mzprof` is a CLI tool that connects to any Materialize environment and subscribes to [introspection relations](https://materialize.com/docs/sql/system-catalog/mz_introspection) to collect operator-level metrics about running dataflows.
 It produces profiles in [pprof](https://github.com/google/pprof) format, which can be analyzed using any tool supporting that format.
 
-`mzprof` supports collecting one-off elapsed time and memory size profiles.
-Support for continuous profiling is planned.
-
 ## Installation
 
 To install the latest published version of `mzprof` run:
@@ -42,6 +39,22 @@ To collect a heap size profile, specify the `size` profile type instead:
 ```
 mzprof [...] --profile size
 ```
+
+## Profile Types
+
+`mzprof` currently supports four profile types:
+
+* `time`: operator elapsed times
+* `size`: operator heap sizes
+* `capacity`: operator heap capacities
+* `records`: operator maintained record counts
+
+It is possible to collect profiles for multiple types in a single `mzprof` invocation, by passing more than one profile type in `--profile`.
+
+Note that different profile types capture different classes of metrics.
+Specifically, `time` is a rate metric (measures events per time), whereas `size`, `capacity`, and `records` are level metrics (measure accumulated values).
+Collecting a profile over a time period using `--duration` only makes sense for rate metrics.
+
 
 ## Viewing Profiles
 

@@ -11,6 +11,8 @@ pub struct Aggregator {
     operators: BTreeMap<OpId, OpInfo>,
     elapsed: BTreeMap<(OpId, WorkerId), Duration>,
     sizes: BTreeMap<(OpId, WorkerId), i64>,
+    capacities: BTreeMap<(OpId, WorkerId), i64>,
+    records: BTreeMap<(OpId, WorkerId), i64>,
 }
 
 impl Aggregator {
@@ -20,6 +22,8 @@ impl Aggregator {
             operators: BTreeMap::new(),
             elapsed: BTreeMap::new(),
             sizes: BTreeMap::new(),
+            capacities: BTreeMap::new(),
+            records: BTreeMap::new(),
         }
     }
 
@@ -34,6 +38,8 @@ impl Aggregator {
                 Data::Operator(id, info) => self.update_operator(id, info, diff),
                 Data::Elapsed(id, worker) => self.update_elapsed(id, worker, diff),
                 Data::Size(id, worker) => self.update_size(id, worker, diff),
+                Data::Capacity(id, worker) => self.update_capacity(id, worker, diff),
+                Data::Records(id, worker) => self.update_records(id, worker, diff),
             }
         }
     }
@@ -56,6 +62,20 @@ impl Aggregator {
 
     fn update_size(&mut self, id: OpId, worker: WorkerId, diff: i64) {
         self.sizes
+            .entry((id, worker))
+            .and_modify(|x| *x += diff)
+            .or_insert(diff);
+    }
+
+    fn update_capacity(&mut self, id: OpId, worker: WorkerId, diff: i64) {
+        self.capacities
+            .entry((id, worker))
+            .and_modify(|x| *x += diff)
+            .or_insert(diff);
+    }
+
+    fn update_records(&mut self, id: OpId, worker: WorkerId, diff: i64) {
+        self.records
             .entry((id, worker))
             .and_modify(|x| *x += diff)
             .or_insert(diff);
@@ -109,6 +129,12 @@ impl Aggregator {
 
         if !self.sizes.is_empty() {
             builder.add_samples("size", "bytes", &self.sizes);
+        }
+        if !self.capacities.is_empty() {
+            builder.add_samples("capacity", "bytes", &self.capacities);
+        }
+        if !self.records.is_empty() {
+            builder.add_samples("records", "count", &self.records);
         }
 
         builder.build()

@@ -48,10 +48,14 @@ struct Args {
 
 #[derive(Clone, Debug, ValueEnum, PartialEq, Eq, PartialOrd, Ord)]
 enum Profile {
-    /// elapsed time profile
+    /// elapsed time
     Time,
-    /// heap size profile
+    /// heap size
     Size,
+    /// heap capacity
+    Capacity,
+    /// record count
+    Records,
 }
 
 #[tokio::main]
@@ -76,6 +80,8 @@ async fn main() -> anyhow::Result<()> {
         match profile {
             Profile::Time => collector.subscribe(subscribe::Elapsed, mode).await?,
             Profile::Size => collector.subscribe(subscribe::Size, mode).await?,
+            Profile::Capacity => collector.subscribe(subscribe::Capacity, mode).await?,
+            Profile::Records => collector.subscribe(subscribe::Records, mode).await?,
         }
     }
 
